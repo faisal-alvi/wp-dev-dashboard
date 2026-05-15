@@ -152,6 +152,13 @@ function dev_dashboard_render() {
 		'WooCommerce Extensions'  => admin_url( 'admin.php?page=wc-addons' ),
 	];
 
+	$github_prs = [
+		'woocommerce-bookings'              => 'https://github.com/woocommerce/woocommerce-bookings/pulls',
+		'woocommerce-accommodation-bookings'=> 'https://github.com/woocommerce/woocommerce-accommodation-bookings/pulls',
+		'woocommerce-square'                => 'https://github.com/woocommerce/woocommerce-square/pulls',
+		'woocommerce-bookings-availability' => 'https://github.com/woocommerce/woocommerce-bookings-availability/pulls',
+	];
+
 	?>
 	<style>
 		.dev-dash { max-width: 1400px; margin: 20px auto 0; }
@@ -185,6 +192,10 @@ function dev_dashboard_render() {
 		/* Quick links */
 		.quick-links a { display: block; padding: 8px 12px; margin-bottom: 4px; color: #2271b1; text-decoration: none; border-radius: 4px; font-size: 13px; transition: background .15s; }
 		.quick-links a:hover { background: #f0f6fc; }
+		.quick-links-divider { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #999; padding: 12px 12px 4px; }
+		.quick-links-github a { color: #1f2328; }
+		.quick-links-github a svg { vertical-align: middle; margin-right: 6px; flex-shrink: 0; }
+		.quick-links-github a { display: flex; align-items: center; }
 
 	</style>
 
@@ -221,6 +232,15 @@ function dev_dashboard_render() {
 					<div class="quick-links">
 						<?php foreach ( $quick_links as $label => $url ) : ?>
 							<a href="<?php echo esc_url( $url ); ?>" target="_blank"><?php echo esc_html( $label ); ?></a>
+						<?php endforeach; ?>
+					</div>
+					<div class="quick-links-divider">GitHub PRs</div>
+					<div class="quick-links quick-links-github">
+						<?php foreach ( $github_prs as $label => $url ) : ?>
+							<a href="<?php echo esc_url( $url ); ?>" target="_blank">
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+								<?php echo esc_html( $label ); ?>
+							</a>
 						<?php endforeach; ?>
 					</div>
 				</div>
