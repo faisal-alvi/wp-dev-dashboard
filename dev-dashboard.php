@@ -132,7 +132,11 @@ function dev_dashboard_render() {
 		];
 	}
 
+	// Active plugins first, then alphabetical within each group.
 	usort( $plugins, function ( $a, $b ) {
+		if ( $a['active'] !== $b['active'] ) {
+			return $a['active'] ? -1 : 1;
+		}
 		return strcasecmp( $a['name'], $b['name'] );
 	} );
 
@@ -171,23 +175,24 @@ function dev_dashboard_render() {
 		.dev-panel { background: #fff; border: 1px solid #dcdcde; border-radius: 8px; padding: 20px; }
 		.dev-panel h2 { font-size: 16px; font-weight: 600; margin: 0 0 16px; padding-bottom: 12px; border-bottom: 1px solid #f0f0f1; }
 
-		/* Plugin list */
-		.plugin-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f6f7f7; }
-		.plugin-row:last-child { border-bottom: none; }
-		.plugin-info { flex: 1; min-width: 0; }
-		.plugin-name { font-weight: 500; font-size: 13px; }
-		.plugin-ver { color: #757575; font-size: 12px; margin-left: 6px; }
-		.plugin-filter { margin-bottom: 12px; }
-		.plugin-filter input { width: 100%; padding: 6px 10px; border: 1px solid #dcdcde; border-radius: 4px; font-size: 13px; }
+		/* Plugin grid */
+		.plugin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+		.plugin-card { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #dcdcde; border-radius: 6px; cursor: pointer; user-select: none; transition: border-color .15s, background .15s; width: 100%; box-sizing: border-box; }
+		.plugin-card:hover { border-color: #2271b1; background: #f8fbff; }
+		.plugin-card.is-active { border-color: #2271b1; background: #f0f6fc; }
+		.plugin-card.is-busy { opacity: .6; pointer-events: none; }
+		.plugin-card-top { display: none; }
+		.plugin-card-info { flex: 1; min-width: 0; }
+		.plugin-name { font-weight: 600; font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+		.plugin-ver { color: #757575; font-size: 11px; display: block; margin-top: 2px; }
+		.plugin-filter { margin-bottom: 14px; }
+		.plugin-filter input { width: 100%; padding: 6px 10px; border: 1px solid #dcdcde; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
 
-		/* Toggle switch */
-		.toggle-switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; margin-left: 12px; }
-		.toggle-switch input { opacity: 0; width: 0; height: 0; }
-		.toggle-slider { position: absolute; cursor: pointer; inset: 0; background: #ccc; border-radius: 22px; transition: .2s; }
-		.toggle-slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: .2s; }
-		.toggle-switch input:checked + .toggle-slider { background: #2271b1; }
-		.toggle-switch input:checked + .toggle-slider:before { transform: translateX(18px); }
-		.toggle-switch input:disabled + .toggle-slider { opacity: 0.5; cursor: wait; }
+		/* Toggle pill on card */
+		.plugin-card-toggle { flex-shrink: 0; width: 34px; height: 19px; background: #ccc; border-radius: 19px; position: relative; transition: background .2s; margin-top: 1px; }
+		.plugin-card-toggle::after { content: ""; position: absolute; width: 13px; height: 13px; background: #fff; border-radius: 50%; top: 3px; left: 3px; transition: transform .2s; }
+		.plugin-card.is-active .plugin-card-toggle { background: #2271b1; }
+		.plugin-card.is-active .plugin-card-toggle::after { transform: translateX(15px); }
 
 		/* Quick links */
 		.quick-links a { display: block; padding: 8px 12px; margin-bottom: 4px; color: #2271b1; text-decoration: none; border-radius: 4px; font-size: 13px; transition: background .15s; }
@@ -208,17 +213,17 @@ function dev_dashboard_render() {
 					<div class="plugin-filter">
 						<input type="text" id="plugin-search" placeholder="Filter plugins...">
 					</div>
-					<div id="plugin-list">
+					<div class="plugin-grid" id="plugin-list">
 						<?php foreach ( $plugins as $p ) : ?>
-							<div class="plugin-row" data-slug="<?php echo esc_attr( $p['slug'] ); ?>" data-name="<?php echo esc_attr( strtolower( $p['name'] ) ); ?>">
-								<div class="plugin-info">
+							<div class="plugin-card <?php echo $p['active'] ? 'is-active' : ''; ?>"
+								data-slug="<?php echo esc_attr( $p['slug'] ); ?>"
+								data-name="<?php echo esc_attr( strtolower( $p['name'] ) ); ?>"
+								role="button" tabindex="0" aria-pressed="<?php echo $p['active'] ? 'true' : 'false'; ?>">
+								<div class="plugin-card-info">
 									<span class="plugin-name"><?php echo esc_html( $p['name'] ); ?></span>
-									<span class="plugin-ver"><?php echo esc_html( $p['ver'] ); ?></span>
+									<span class="plugin-ver"><?php echo esc_html( $p['ver'] ) ?: '—'; ?></span>
 								</div>
-								<label class="toggle-switch">
-									<input type="checkbox" data-plugin="<?php echo esc_attr( $p['slug'] ); ?>" <?php checked( $p['active'] ); ?>>
-									<span class="toggle-slider"></span>
-								</label>
+								<div class="plugin-card-toggle" aria-hidden="true"></div>
 							</div>
 						<?php endforeach; ?>
 					</div>
@@ -253,14 +258,13 @@ function dev_dashboard_render() {
 		const ajaxUrl = <?php echo wp_json_encode( $admin_url ); ?>;
 		const nonce   = <?php echo wp_json_encode( $nonce ); ?>;
 
-		// Plugin toggle
-		document.getElementById('plugin-list').addEventListener('change', function(e) {
-			if (e.target.type !== 'checkbox') return;
-			const cb     = e.target;
-			const slug   = cb.dataset.plugin;
-			const action = cb.checked ? 'activate' : 'deactivate';
+		// Plugin toggle — entire card is clickable
+		function togglePlugin(card) {
+			const slug   = card.dataset.slug;
+			const active = card.classList.contains('is-active');
+			const action = active ? 'deactivate' : 'activate';
 
-			cb.disabled = true;
+			card.classList.add('is-busy');
 
 			const form = new FormData();
 			form.append('action', 'dev_dashboard_toggle_plugin');
@@ -271,23 +275,35 @@ function dev_dashboard_render() {
 			fetch(ajaxUrl, { method: 'POST', body: form })
 				.then(r => r.json())
 				.then(res => {
-					if (!res.success) {
-						cb.checked = !cb.checked;
+					if (res.success) {
+						card.classList.toggle('is-active', !active);
+						card.setAttribute('aria-pressed', String(!active));
+					} else {
 						alert('Error: ' + (res.data || 'Unknown error'));
 					}
 				})
-				.catch(() => {
-					cb.checked = !cb.checked;
-					alert('Network error.');
-				})
-				.finally(() => { cb.disabled = false; });
+				.catch(() => { alert('Network error.'); })
+				.finally(() => { card.classList.remove('is-busy'); });
+		}
+
+		document.getElementById('plugin-list').addEventListener('click', function(e) {
+			const card = e.target.closest('.plugin-card');
+			if (card) togglePlugin(card);
+		});
+
+		document.getElementById('plugin-list').addEventListener('keydown', function(e) {
+			if (e.key === 'Enter' || e.key === ' ') {
+				const card = e.target.closest('.plugin-card');
+				if (card) { e.preventDefault(); togglePlugin(card); }
+			}
 		});
 
 		// Plugin filter
 		document.getElementById('plugin-search').addEventListener('input', function() {
 			const q = this.value.toLowerCase();
-			document.querySelectorAll('.plugin-row').forEach(row => {
-				row.style.display = row.dataset.name.includes(q) ? '' : 'none';
+			document.querySelectorAll('.plugin-card').forEach(card => {
+				card.style.display = card.dataset.name.includes(q) ? '' : 'flex';
+				if (!card.dataset.name.includes(q)) card.style.display = 'none';
 			});
 		});
 
