@@ -270,6 +270,7 @@ function dev_dashboard_render() {
 	$quick_links = [
 		'WooCommerce Settings'    => admin_url( 'admin.php?page=wc-settings' ),
 		'Square Settings'         => admin_url( 'admin.php?page=wc-settings&tab=square' ),
+		'Square Update'           => admin_url( 'admin.php?page=wc-settings&tab=square&section=update' ),
 		'Payment Gateways'        => admin_url( 'admin.php?page=wc-settings&tab=checkout' ),
 		'Products'                => admin_url( 'edit.php?post_type=product' ),
 		'Orders'                  => admin_url( 'edit.php?post_type=shop_order' ),
