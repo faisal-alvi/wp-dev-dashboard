@@ -1,8 +1,8 @@
 <?php
 /**
- * Dev Dashboard
+ * WP Dev Dashboard
  *
- * A lightweight must-use plugin that adds a "Dev Dashboard" page to the
+ * A lightweight must-use plugin that adds a "WP Dev Dashboard" page to the
  * WordPress admin. It gives you one-click plugin toggling (via AJAX, no
  * page reload) and a configurable quick-links sidebar.
  *
@@ -13,7 +13,7 @@
  *    Create that directory if it does not exist.
  * 2. That's it — must-use plugins load automatically and cannot be
  *    deactivated from the Plugins screen.
- * 3. Visit WP Admin → Dev Dashboard (near the top of the sidebar).
+ * 3. Visit WP Admin → WP Dev Dashboard (near the top of the sidebar).
  *
  * -------------------------------------------------------------------------
  * CUSTOMISING QUICK LINKS
@@ -43,6 +43,18 @@
  * be deactivated through WordPress at all.
  *
  * -------------------------------------------------------------------------
+ * EXCLUSIVE GROUPS
+ * -------------------------------------------------------------------------
+ * Plugins that are version/ticket variants of the same base plugin are
+ * automatically grouped. Activating one member of a group deactivates all
+ * other active members instantly — no need to manually turn off the previous
+ * variant first. Cards in a group show a small orange dot indicator.
+ *
+ * Grouping is detected automatically: plugin B is a variant of plugin A when
+ * B's slug equals A's slug plus a version/ticket suffix such as -315, -309,
+ * -SQUARE-143, or -redesign.
+ *
+ * -------------------------------------------------------------------------
  * REQUIREMENTS
  * -------------------------------------------------------------------------
  * - WordPress 5.0+
@@ -54,10 +66,50 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/**
+ * Given a slug and a list of all known slugs, return every other slug that
+ * belongs to the same exclusive group.
+ *
+ * Two slugs are grouped when one is a "version variant" of the other:
+ *   B = A + suffix  where suffix matches -<digits>, -<TICKET-digits>,
+ *                   -redesign, -main, -beta, or -dev.
+ */
+function dev_dashboard_exclusive_siblings( string $slug, array $all_slugs ): array {
+	// Suffixes that signal a variant rather than a distinct plugin.
+	$variant_pattern = '/^-(\d+|[A-Z]+-\d+|redesign|main|beta|dev)$/i';
+
+	$siblings = [];
+
+	foreach ( $all_slugs as $other ) {
+		if ( $other === $slug ) {
+			continue;
+		}
+
+		// Is $other a variant of $slug?  (other = slug + suffix)
+		if ( str_starts_with( $other, $slug ) ) {
+			$suffix = substr( $other, strlen( $slug ) );
+			if ( preg_match( $variant_pattern, $suffix ) ) {
+				$siblings[] = $other;
+				continue;
+			}
+		}
+
+		// Is $slug a variant of $other?  (slug = other + suffix)
+		if ( str_starts_with( $slug, $other ) ) {
+			$suffix = substr( $slug, strlen( $other ) );
+			if ( preg_match( $variant_pattern, $suffix ) ) {
+				$siblings[] = $other;
+			}
+		}
+	}
+
+	return $siblings;
+}
+
 add_action( 'admin_menu', function () {
 	add_menu_page(
-		'Dev Dashboard',
-		'Dev Dashboard',
+		'WP Dev Dashboard',
+		'WP Dev Dashboard',
 		'manage_options',
 		'dev-dashboard',
 		'dev_dashboard_render',
@@ -73,39 +125,69 @@ add_action( 'wp_ajax_dev_dashboard_toggle_plugin', function () {
 		wp_send_json_error( 'Permission denied.' );
 	}
 
-	$plugin = sanitize_text_field( $_POST['plugin'] ?? '' );
+	$slug   = sanitize_text_field( $_POST['plugin'] ?? '' );
 	$action = sanitize_text_field( $_POST['toggle'] ?? '' );
 
-	if ( ! $plugin || ! in_array( $action, [ 'activate', 'deactivate' ], true ) ) {
+	if ( ! $slug || ! in_array( $action, [ 'activate', 'deactivate' ], true ) ) {
 		wp_send_json_error( 'Invalid request.' );
 	}
 
+	// Resolve slug → plugin file path.
 	$all_plugins = get_plugins();
-	$found       = false;
+	$plugin_file = null;
 	foreach ( $all_plugins as $file => $data ) {
-		if ( dirname( $file ) === $plugin || $file === $plugin ) {
-			$plugin = $file;
-			$found  = true;
+		if ( dirname( $file ) === $slug || $file === $slug ) {
+			$plugin_file = $file;
 			break;
 		}
 	}
 
-	if ( ! $found ) {
+	if ( ! $plugin_file ) {
 		wp_send_json_error( 'Plugin not found.' );
 	}
 
+	$deactivated_slugs = [];
+
 	if ( $action === 'activate' ) {
-		$result = activate_plugin( $plugin );
+		$result = activate_plugin( $plugin_file );
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( $result->get_error_message() );
 		}
+
+		// Exclusive mode: deactivate siblings in the same group.
+		$all_slugs = [];
+		foreach ( $all_plugins as $file => $data ) {
+			$s = dirname( $file );
+			if ( $s === '.' ) {
+				$s = basename( $file, '.php' );
+			}
+			$all_slugs[] = $s;
+		}
+
+		$siblings = dev_dashboard_exclusive_siblings( $slug, $all_slugs );
+
+		foreach ( $siblings as $sibling_slug ) {
+			// Find sibling file and deactivate only if currently active.
+			foreach ( $all_plugins as $file => $data ) {
+				$s = dirname( $file );
+				if ( $s === '.' ) {
+					$s = basename( $file, '.php' );
+				}
+				if ( $s === $sibling_slug && is_plugin_active( $file ) ) {
+					deactivate_plugins( $file );
+					$deactivated_slugs[] = $sibling_slug;
+					break;
+				}
+			}
+		}
 	} else {
-		deactivate_plugins( $plugin );
+		deactivate_plugins( $plugin_file );
 	}
 
 	wp_send_json_success( [
-		'plugin' => $plugin,
-		'status' => is_plugin_active( $plugin ) ? 'active' : 'inactive',
+		'plugin'      => $plugin_file,
+		'status'      => is_plugin_active( $plugin_file ) ? 'active' : 'inactive',
+		'deactivated' => $deactivated_slugs,
 	] );
 } );
 
@@ -139,6 +221,16 @@ function dev_dashboard_render() {
 		}
 		return strcasecmp( $a['name'], $b['name'] );
 	} );
+
+	// Build exclusive-group map: slug => [sibling slugs] (only for grouped plugins).
+	$all_slugs   = array_column( $plugins, 'slug' );
+	$group_map   = [];
+	foreach ( $all_slugs as $s ) {
+		$siblings = dev_dashboard_exclusive_siblings( $s, $all_slugs );
+		if ( ! empty( $siblings ) ) {
+			$group_map[ $s ] = $siblings;
+		}
+	}
 
 	$nonce     = wp_create_nonce( 'dev_dashboard_nonce' );
 	$admin_url = admin_url( 'admin-ajax.php' );
@@ -177,11 +269,10 @@ function dev_dashboard_render() {
 
 		/* Plugin grid */
 		.plugin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-		.plugin-card { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #dcdcde; border-radius: 6px; cursor: pointer; user-select: none; transition: border-color .15s, background .15s; width: 100%; box-sizing: border-box; }
+		.plugin-card { display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 1px solid #dcdcde; border-radius: 6px; cursor: pointer; user-select: none; transition: border-color .15s, background .15s; width: 100%; box-sizing: border-box; position: relative; }
 		.plugin-card:hover { border-color: #2271b1; background: #f8fbff; }
 		.plugin-card.is-active { border-color: #2271b1; background: #f0f6fc; }
 		.plugin-card.is-busy { opacity: .6; pointer-events: none; }
-		.plugin-card-top { display: none; }
 		.plugin-card-info { flex: 1; min-width: 0; }
 		.plugin-name { font-weight: 600; font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 		.plugin-ver { color: #757575; font-size: 11px; display: block; margin-top: 2px; }
@@ -194,6 +285,10 @@ function dev_dashboard_render() {
 		.plugin-card.is-active .plugin-card-toggle { background: #2271b1; }
 		.plugin-card.is-active .plugin-card-toggle::after { transform: translateX(15px); }
 
+		/* Exclusive group indicator dot */
+		.plugin-card.has-group::before { content: ""; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: #f0a500; }
+		.plugin-card.is-active.has-group::before { background: #f0a500; }
+
 		/* Quick links */
 		.quick-links a { display: block; padding: 8px 12px; margin-bottom: 4px; color: #2271b1; text-decoration: none; border-radius: 4px; font-size: 13px; transition: background .15s; }
 		.quick-links a:hover { background: #f0f6fc; }
@@ -205,7 +300,7 @@ function dev_dashboard_render() {
 	</style>
 
 	<div class="dev-dash">
-		<h1>Dev Dashboard</h1>
+		<h1>WP Dev Dashboard</h1>
 		<div class="dev-dash-grid">
 			<div>
 				<div class="dev-panel">
@@ -215,7 +310,7 @@ function dev_dashboard_render() {
 					</div>
 					<div class="plugin-grid" id="plugin-list">
 						<?php foreach ( $plugins as $p ) : ?>
-							<div class="plugin-card <?php echo $p['active'] ? 'is-active' : ''; ?>"
+							<div class="plugin-card <?php echo $p['active'] ? 'is-active' : ''; ?> <?php echo isset( $group_map[ $p['slug'] ] ) ? 'has-group' : ''; ?>"
 								data-slug="<?php echo esc_attr( $p['slug'] ); ?>"
 								data-name="<?php echo esc_attr( strtolower( $p['name'] ) ); ?>"
 								role="button" tabindex="0" aria-pressed="<?php echo $p['active'] ? 'true' : 'false'; ?>">
@@ -258,7 +353,7 @@ function dev_dashboard_render() {
 		const ajaxUrl = <?php echo wp_json_encode( $admin_url ); ?>;
 		const nonce   = <?php echo wp_json_encode( $nonce ); ?>;
 
-		// Plugin toggle — entire card is clickable
+		// Plugin toggle — entire card is clickable.
 		function togglePlugin(card) {
 			const slug   = card.dataset.slug;
 			const active = card.classList.contains('is-active');
@@ -276,8 +371,22 @@ function dev_dashboard_render() {
 				.then(r => r.json())
 				.then(res => {
 					if (res.success) {
+						// Update the clicked card.
 						card.classList.toggle('is-active', !active);
 						card.setAttribute('aria-pressed', String(!active));
+
+						// Update any siblings that were auto-deactivated server-side.
+						if (res.data.deactivated && res.data.deactivated.length) {
+							res.data.deactivated.forEach(siblingSlug => {
+								const sibCard = document.querySelector(
+									`.plugin-card[data-slug="${CSS.escape(siblingSlug)}"]`
+								);
+								if (sibCard) {
+									sibCard.classList.remove('is-active');
+									sibCard.setAttribute('aria-pressed', 'false');
+								}
+							});
+						}
 					} else {
 						alert('Error: ' + (res.data || 'Unknown error'));
 					}
@@ -298,12 +407,11 @@ function dev_dashboard_render() {
 			}
 		});
 
-		// Plugin filter
+		// Plugin filter.
 		document.getElementById('plugin-search').addEventListener('input', function() {
 			const q = this.value.toLowerCase();
 			document.querySelectorAll('.plugin-card').forEach(card => {
-				card.style.display = card.dataset.name.includes(q) ? '' : 'flex';
-				if (!card.dataset.name.includes(q)) card.style.display = 'none';
+				card.style.display = card.dataset.name.includes(q) ? '' : 'none';
 			});
 		});
 
