@@ -78,6 +78,13 @@ function dev_dashboard_exclusive_siblings( string $slug, array $all_slugs ): arr
 	// Suffixes that signal a variant rather than a distinct plugin.
 	$variant_pattern = '/^-(\d+|[A-Z]+-\d+|redesign|main|beta|dev)$/i';
 
+	// If this slug is a git worktree path (e.g. base-plugin/.claude/worktrees/BRANCH),
+	// extract the base plugin slug so we can group it with its siblings.
+	$worktree_base = null;
+	if ( preg_match( '#^(.+)/\.claude/worktrees/.+$#', $slug, $m ) ) {
+		$worktree_base = $m[1]; // e.g. "woocommerce-square"
+	}
+
 	$siblings = [];
 
 	foreach ( $all_slugs as $other ) {
@@ -99,7 +106,19 @@ function dev_dashboard_exclusive_siblings( string $slug, array $all_slugs ): arr
 			$suffix = substr( $slug, strlen( $other ) );
 			if ( preg_match( $variant_pattern, $suffix ) ) {
 				$siblings[] = $other;
+				continue;
 			}
+		}
+
+		// Is $slug a worktree of $other? (e.g. base-plugin/.claude/worktrees/X and base-plugin)
+		if ( $worktree_base !== null && $other === $worktree_base ) {
+			$siblings[] = $other;
+			continue;
+		}
+
+		// Is $other a worktree of $slug?
+		if ( preg_match( '#^' . preg_quote( $slug, '#' ) . '/\.claude/worktrees/.+$#', $other ) ) {
+			$siblings[] = $other;
 		}
 	}
 
@@ -161,75 +180,41 @@ add_action( 'wp_ajax_dev_dashboard_toggle_plugin', function () {
 	$all_slugs = array_keys( $slug_to_file );
 
 	if ( $action === 'activate' ) {
+		// Always update active_plugins directly rather than calling activate_plugin().
+		// This prevents class-already-declared fatals: multiple plugin variants define
+		// identical class names, and loading a second one in the same PHP process dies.
+		// Direct option update defers actual loading safely to the next request.
+		$active   = get_option( 'active_plugins', [] );
 		$siblings = dev_dashboard_exclusive_siblings( $slug, $all_slugs );
 
-		if ( ! empty( $siblings ) ) {
-			// Exclusive group: manipulate active_plugins directly instead of
-			// calling activate_plugin(). This avoids the class-already-declared
-			// fatal that occurs when a sibling variant is already loaded in this
-			// PHP process — both variants define the same class names. The new
-			// plugin will load cleanly on the next request.
-			$active = get_option( 'active_plugins', [] );
-
-			foreach ( $siblings as $sibling_slug ) {
-				$sibling_file = $slug_to_file[ $sibling_slug ] ?? null;
-				if ( ! $sibling_file ) {
-					continue;
-				}
-				$key = array_search( $sibling_file, $active, true );
-				if ( $key !== false ) {
-					unset( $active[ $key ] );
-					$deactivated_slugs[] = $sibling_slug;
-					do_action( "deactivate_{$sibling_file}" );
-					do_action( 'deactivated_plugin', $sibling_file, false );
-				}
+		// Deactivate exclusive siblings first.
+		foreach ( $siblings as $sibling_slug ) {
+			$sibling_file = $slug_to_file[ $sibling_slug ] ?? null;
+			if ( ! $sibling_file ) {
+				continue;
 			}
-
-			if ( ! in_array( $plugin_file, $active, true ) ) {
-				$active[] = $plugin_file;
-				sort( $active );
-			}
-
-			update_option( 'active_plugins', array_values( $active ) );
-			do_action( "activate_{$plugin_file}" );
-			do_action( 'activated_plugin', $plugin_file, false );
-
-		} else {
-			// Non-grouped plugin: use standard WordPress activation with a
-			// shutdown handler to catch any fatal errors gracefully.
-			register_shutdown_function( function() {
-				$error = error_get_last();
-				if ( $error && in_array( $error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ], true ) ) {
-					while ( ob_get_level() ) {
-						ob_end_clean();
-					}
-					if ( ! headers_sent() ) {
-						header( 'Content-Type: application/json; charset=UTF-8' );
-					}
-					echo wp_json_encode( [
-						'success' => false,
-						'data'    => 'Fatal error: ' . $error['message'] . ' in ' . basename( $error['file'] ) . ' on line ' . $error['line'],
-					] );
-					exit;
-				}
-			} );
-
-			ob_start();
-			$result   = activate_plugin( $plugin_file, '', false, true );
-			$captured = ob_get_clean();
-
-			if ( is_wp_error( $result ) ) {
-				wp_send_json_error( $result->get_error_message() );
-			}
-
-			if ( ! empty( trim( $captured ) ) ) {
-				wp_send_json_error( 'Unexpected output during activation: ' . substr( strip_tags( $captured ), 0, 300 ) );
+			$key = array_search( $sibling_file, $active, true );
+			if ( $key !== false ) {
+				unset( $active[ $key ] );
+				$deactivated_slugs[] = $sibling_slug;
+				do_action( "deactivate_{$sibling_file}" );
+				do_action( 'deactivated_plugin', $sibling_file, false );
 			}
 		}
+
+		// Add the target plugin and persist.
+		if ( ! in_array( $plugin_file, $active, true ) ) {
+			$active[] = $plugin_file;
+			sort( $active );
+		}
+
+		update_option( 'active_plugins', array_values( $active ) );
+		do_action( "activate_{$plugin_file}" );
+		do_action( 'activated_plugin', $plugin_file, false );
+
 	} else {
 		deactivate_plugins( $plugin_file );
 	}
-	// $slug_to_file built above is no longer needed after this point.
 
 	wp_send_json_success( [
 		'plugin'      => $plugin_file,
