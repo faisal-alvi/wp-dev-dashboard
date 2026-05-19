@@ -148,41 +148,88 @@ add_action( 'wp_ajax_dev_dashboard_toggle_plugin', function () {
 
 	$deactivated_slugs = [];
 
+	// Build slug → file map for lookups below.
+	$slug_to_file = [];
+	foreach ( $all_plugins as $file => $data ) {
+		$s = dirname( $file );
+		if ( $s === '.' ) {
+			$s = basename( $file, '.php' );
+		}
+		$slug_to_file[ $s ] = $file;
+	}
+
+	$all_slugs = array_keys( $slug_to_file );
+
 	if ( $action === 'activate' ) {
-		$result = activate_plugin( $plugin_file );
-		if ( is_wp_error( $result ) ) {
-			wp_send_json_error( $result->get_error_message() );
-		}
-
-		// Exclusive mode: deactivate siblings in the same group.
-		$all_slugs = [];
-		foreach ( $all_plugins as $file => $data ) {
-			$s = dirname( $file );
-			if ( $s === '.' ) {
-				$s = basename( $file, '.php' );
-			}
-			$all_slugs[] = $s;
-		}
-
 		$siblings = dev_dashboard_exclusive_siblings( $slug, $all_slugs );
 
-		foreach ( $siblings as $sibling_slug ) {
-			// Find sibling file and deactivate only if currently active.
-			foreach ( $all_plugins as $file => $data ) {
-				$s = dirname( $file );
-				if ( $s === '.' ) {
-					$s = basename( $file, '.php' );
+		if ( ! empty( $siblings ) ) {
+			// Exclusive group: manipulate active_plugins directly instead of
+			// calling activate_plugin(). This avoids the class-already-declared
+			// fatal that occurs when a sibling variant is already loaded in this
+			// PHP process — both variants define the same class names. The new
+			// plugin will load cleanly on the next request.
+			$active = get_option( 'active_plugins', [] );
+
+			foreach ( $siblings as $sibling_slug ) {
+				$sibling_file = $slug_to_file[ $sibling_slug ] ?? null;
+				if ( ! $sibling_file ) {
+					continue;
 				}
-				if ( $s === $sibling_slug && is_plugin_active( $file ) ) {
-					deactivate_plugins( $file );
+				$key = array_search( $sibling_file, $active, true );
+				if ( $key !== false ) {
+					unset( $active[ $key ] );
 					$deactivated_slugs[] = $sibling_slug;
-					break;
+					do_action( "deactivate_{$sibling_file}" );
+					do_action( 'deactivated_plugin', $sibling_file, false );
 				}
+			}
+
+			if ( ! in_array( $plugin_file, $active, true ) ) {
+				$active[] = $plugin_file;
+				sort( $active );
+			}
+
+			update_option( 'active_plugins', array_values( $active ) );
+			do_action( "activate_{$plugin_file}" );
+			do_action( 'activated_plugin', $plugin_file, false );
+
+		} else {
+			// Non-grouped plugin: use standard WordPress activation with a
+			// shutdown handler to catch any fatal errors gracefully.
+			register_shutdown_function( function() {
+				$error = error_get_last();
+				if ( $error && in_array( $error['type'], [ E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR ], true ) ) {
+					while ( ob_get_level() ) {
+						ob_end_clean();
+					}
+					if ( ! headers_sent() ) {
+						header( 'Content-Type: application/json; charset=UTF-8' );
+					}
+					echo wp_json_encode( [
+						'success' => false,
+						'data'    => 'Fatal error: ' . $error['message'] . ' in ' . basename( $error['file'] ) . ' on line ' . $error['line'],
+					] );
+					exit;
+				}
+			} );
+
+			ob_start();
+			$result   = activate_plugin( $plugin_file, '', false, true );
+			$captured = ob_get_clean();
+
+			if ( is_wp_error( $result ) ) {
+				wp_send_json_error( $result->get_error_message() );
+			}
+
+			if ( ! empty( trim( $captured ) ) ) {
+				wp_send_json_error( 'Unexpected output during activation: ' . substr( strip_tags( $captured ), 0, 300 ) );
 			}
 		}
 	} else {
 		deactivate_plugins( $plugin_file );
 	}
+	// $slug_to_file built above is no longer needed after this point.
 
 	wp_send_json_success( [
 		'plugin'      => $plugin_file,
@@ -368,8 +415,16 @@ function dev_dashboard_render() {
 			form.append('toggle', action);
 
 			fetch(ajaxUrl, { method: 'POST', body: form })
-				.then(r => r.json())
-				.then(res => {
+				.then(r => r.text())
+				.then(text => {
+					let res;
+					try {
+						res = JSON.parse(text);
+					} catch(e) {
+						// PHP output before JSON — show the raw response for debugging.
+						alert('Activation failed. Server response:\n\n' + text.substring(0, 500));
+						return;
+					}
 					if (res.success) {
 						// Update the clicked card.
 						card.classList.toggle('is-active', !active);
@@ -391,7 +446,7 @@ function dev_dashboard_render() {
 						alert('Error: ' + (res.data || 'Unknown error'));
 					}
 				})
-				.catch(() => { alert('Network error.'); })
+				.catch(err => { alert('Network error: ' + err.message); })
 				.finally(() => { card.classList.remove('is-busy'); });
 		}
 
